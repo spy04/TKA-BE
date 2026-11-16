@@ -65,6 +65,10 @@ func TestMaterialWhereUsesBoundParameters(t *testing.T) {
 	if strings.Contains(where, search) {
 		t.Fatal("search text was interpolated into SQL")
 	}
+	if strings.Contains(where, "?") || !strings.Contains(where, "m.title ILIKE $1") ||
+		!strings.Contains(where, "m.access_tier = $9") {
+		t.Fatalf("where = %q, want PostgreSQL placeholders and case-insensitive search", where)
+	}
 	want := []any{"%" + search + "%", "%" + search + "%", "%" + search + "%", "%" + search + "%", "SMA", 11, "Fisika", "Fisika", "FREE"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
@@ -72,11 +76,26 @@ func TestMaterialWhereUsesBoundParameters(t *testing.T) {
 }
 
 func TestMaterialRelevanceSortHasStableTieBreakers(t *testing.T) {
-	order, args := materialOrder(listQuery{Search: "newton", Sort: "relevan"})
-	if !strings.Contains(order, "CASE WHEN") || !strings.Contains(order, "m.id ASC") {
+	order, args := materialOrder(listQuery{Search: "newton", Sort: "relevan"}, 10)
+	if !strings.Contains(order, "CASE WHEN") || !strings.Contains(order, "m.id ASC") ||
+		!strings.Contains(order, "LOWER($10)") || !strings.Contains(order, "m.title ILIKE $11") ||
+		!strings.Contains(order, "s.name ILIKE $12") {
 		t.Fatalf("order = %q, want relevance and stable tie-breakers", order)
 	}
 	if !reflect.DeepEqual(args, []any{"newton", "%newton%", "%newton%"}) {
 		t.Fatalf("order args = %#v", args)
+	}
+}
+
+func TestPackageWhereUsesSequentialPostgresParameters(t *testing.T) {
+	where, args := packageWhere(listQuery{Search: "bio", Kind: "PRACTICE", Level: "SMA", Grade: 10})
+	if strings.Contains(where, "?") ||
+		!strings.Contains(where, "p.title ILIKE $1") ||
+		!strings.Contains(where, "p.kind = $4") ||
+		!strings.Contains(where, "p.grade = $6") {
+		t.Fatalf("where = %q, want sequential PostgreSQL placeholders", where)
+	}
+	if !reflect.DeepEqual(args, []any{"%bio%", "%bio%", "%bio%", "PRACTICE", "SMA", 10}) {
+		t.Fatalf("args = %#v", args)
 	}
 }

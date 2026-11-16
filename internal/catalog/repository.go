@@ -3,6 +3,7 @@ package catalog
 import (
 	"context"
 	"database/sql"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -33,7 +34,10 @@ func (r *Repository) ListMaterials(ctx context.Context, query listQuery) ([]Mate
 	).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	order, orderArgs := materialOrder(query)
+	order, orderArgs := materialOrder(query, len(args)+1)
+	args = append(args, orderArgs...)
+	limitPlaceholder := appendPostgresArg(&args, query.PageSize)
+	offsetPlaceholder := appendPostgresArg(&args, query.Offset)
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT m.id, m.slug, m.title, m.description, s.id, s.slug, s.name,
 		        m.education_level, m.grade, m.curriculum, m.category, m.access_tier,
@@ -50,8 +54,8 @@ func (r *Repository) ListMaterials(ctx context.Context, query listQuery) ([]Mate
 		         WHERE c.material_id = m.id) AS learner_count
 		 FROM materials m
 		 JOIN subjects s ON s.id = m.subject_id`+where+order+
-			` LIMIT ? OFFSET ?`,
-		append(append(append([]any{}, args...), orderArgs...), query.PageSize, query.Offset)...,
+			` LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder,
+		args...,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -127,7 +131,7 @@ func (r *Repository) FindMaterialBySlug(ctx context.Context, slug string) (Mater
 		 FROM materials m
 		 JOIN subjects s ON s.id = m.subject_id
 		 LEFT JOIN instructors i ON i.id = m.instructor_id
-		 WHERE m.slug = ? AND m.status = 'PUBLISHED'`,
+		 WHERE m.slug = $1 AND m.status = 'PUBLISHED'`,
 		slug,
 	).Scan(
 		&item.ID, &item.Slug, &item.Title, &description, &item.Subject.ID, &item.Subject.Slug, &item.Subject.Name,
@@ -160,7 +164,7 @@ func (r *Repository) ListOutcomes(ctx context.Context, materialID string) ([]Lea
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id, position, title, description
-		 FROM learning_outcomes WHERE material_id = ? ORDER BY position, id`,
+		 FROM learning_outcomes WHERE material_id = $1 ORDER BY position, id`,
 		materialID,
 	)
 	if err != nil {
@@ -190,7 +194,7 @@ func (r *Repository) ListChapters(ctx context.Context, materialID string) ([]Cha
 		        l.content_type, l.duration_seconds, l.video_url, l.poster_url, l.objective, l.summary
 		 FROM chapters c
 		 LEFT JOIN lessons l ON l.chapter_id = c.id
-		 WHERE c.material_id = ?
+		 WHERE c.material_id = $1
 		 ORDER BY c.position, c.id, l.position, l.id`,
 		materialID,
 	)
@@ -244,9 +248,9 @@ func (r *Repository) HasMaterialGrant(ctx context.Context, studentID, materialID
 	err := r.db.QueryRowContext(ctx,
 		`SELECT EXISTS(
 			SELECT 1 FROM access_grants
-			WHERE student_id = ? AND material_id = ?
-			  AND starts_at <= UTC_TIMESTAMP(6)
-			  AND (expires_at IS NULL OR expires_at > UTC_TIMESTAMP(6))
+			WHERE student_id = $1 AND material_id = $2
+			  AND starts_at <= statement_timestamp()
+			  AND (expires_at IS NULL OR expires_at > statement_timestamp())
 		)`,
 		studentID, materialID,
 	).Scan(&hasGrant)
@@ -269,6 +273,9 @@ func (r *Repository) ListPackages(ctx context.Context, query listQuery) ([]Asses
 	if query.Sort == "soal" || query.Sort == "questions" {
 		order = ` ORDER BY question_count DESC, p.published_at DESC, p.id ASC`
 	}
+	args = append(args, query.PageSize, query.Offset)
+	limitPlaceholder := "$" + strconv.Itoa(len(args)-1)
+	offsetPlaceholder := "$" + strconv.Itoa(len(args))
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT p.id, p.slug, p.title, p.description, p.kind,
 		        s.id, s.slug, s.name, p.material_id, m.slug, m.title,
@@ -281,8 +288,8 @@ func (r *Repository) ListPackages(ctx context.Context, query listQuery) ([]Asses
 			` GROUP BY p.id, p.slug, p.title, p.description, p.kind, s.id, s.slug, s.name,
 			          p.material_id, m.slug, m.title, p.education_level, p.grade, p.access_tier,
 			          p.price_amount, p.difficulty, p.duration_seconds, p.published_at`+order+
-			` LIMIT ? OFFSET ?`,
-		append(append([]any{}, args...), query.PageSize, query.Offset)...,
+			` LIMIT `+limitPlaceholder+` OFFSET `+offsetPlaceholder,
+		args...,
 	)
 	if err != nil {
 		return nil, 0, err
@@ -322,24 +329,23 @@ func materialWhere(query listQuery) (string, []any) {
 	args := make([]any, 0)
 	if query.Search != "" {
 		search := "%" + query.Search + "%"
-		conditions = append(conditions, "(m.title LIKE ? OR COALESCE(m.description, '') LIKE ? OR COALESCE(m.category, '') LIKE ? OR s.name LIKE ?)")
-		args = append(args, search, search, search, search)
+		conditions = append(conditions, "(m.title ILIKE "+appendPostgresArg(&args, search)+
+			" OR COALESCE(m.description, '') ILIKE "+appendPostgresArg(&args, search)+
+			" OR COALESCE(m.category, '') ILIKE "+appendPostgresArg(&args, search)+
+			" OR s.name ILIKE "+appendPostgresArg(&args, search)+")")
 	}
 	if query.Level != "" {
-		conditions = append(conditions, "m.education_level = ?")
-		args = append(args, query.Level)
+		conditions = append(conditions, "m.education_level = "+appendPostgresArg(&args, query.Level))
 	}
 	if query.Grade != 0 {
-		conditions = append(conditions, "m.grade = ?")
-		args = append(args, query.Grade)
+		conditions = append(conditions, "m.grade = "+appendPostgresArg(&args, query.Grade))
 	}
 	if query.Subject != "" {
-		conditions = append(conditions, "(s.slug = ? OR s.name = ?)")
-		args = append(args, query.Subject, query.Subject)
+		conditions = append(conditions, "(s.slug = "+appendPostgresArg(&args, query.Subject)+
+			" OR s.name = "+appendPostgresArg(&args, query.Subject)+")")
 	}
 	if query.Access != "" {
-		conditions = append(conditions, "m.access_tier = ?")
-		args = append(args, query.Access)
+		conditions = append(conditions, "m.access_tier = "+appendPostgresArg(&args, query.Access))
 	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
@@ -349,37 +355,33 @@ func packageWhere(query listQuery) (string, []any) {
 	args := make([]any, 0)
 	if query.Search != "" {
 		search := "%" + query.Search + "%"
-		conditions = append(conditions, "(p.title LIKE ? OR COALESCE(p.description, '') LIKE ? OR s.name LIKE ?)")
-		args = append(args, search, search, search)
+		conditions = append(conditions, "(p.title ILIKE "+appendPostgresArg(&args, search)+
+			" OR COALESCE(p.description, '') ILIKE "+appendPostgresArg(&args, search)+
+			" OR s.name ILIKE "+appendPostgresArg(&args, search)+")")
 	}
 	if query.Kind != "" {
-		conditions = append(conditions, "p.kind = ?")
-		args = append(args, query.Kind)
+		conditions = append(conditions, "p.kind = "+appendPostgresArg(&args, query.Kind))
 	}
 	if query.Level != "" {
-		conditions = append(conditions, "p.education_level = ?")
-		args = append(args, query.Level)
+		conditions = append(conditions, "p.education_level = "+appendPostgresArg(&args, query.Level))
 	}
 	if query.Grade != 0 {
-		conditions = append(conditions, "p.grade = ?")
-		args = append(args, query.Grade)
+		conditions = append(conditions, "p.grade = "+appendPostgresArg(&args, query.Grade))
 	}
 	if query.Subject != "" {
-		conditions = append(conditions, "(s.slug = ? OR s.name = ?)")
-		args = append(args, query.Subject, query.Subject)
+		conditions = append(conditions, "(s.slug = "+appendPostgresArg(&args, query.Subject)+
+			" OR s.name = "+appendPostgresArg(&args, query.Subject)+")")
 	}
 	if query.Access != "" {
-		conditions = append(conditions, "p.access_tier = ?")
-		args = append(args, query.Access)
+		conditions = append(conditions, "p.access_tier = "+appendPostgresArg(&args, query.Access))
 	}
 	if query.Difficulty != "" {
-		conditions = append(conditions, "p.difficulty = ?")
-		args = append(args, query.Difficulty)
+		conditions = append(conditions, "p.difficulty = "+appendPostgresArg(&args, query.Difficulty))
 	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
-func materialOrder(query listQuery) (string, []any) {
+func materialOrder(query listQuery, firstPlaceholder int) (string, []any) {
 	switch query.Sort {
 	case "populer":
 		return " ORDER BY learner_count DESC, m.published_at DESC, m.id ASC", nil
@@ -388,11 +390,19 @@ func materialOrder(query listQuery) (string, []any) {
 	case "relevan":
 		if query.Search != "" {
 			search := "%" + query.Search + "%"
-			return " ORDER BY CASE WHEN LOWER(m.title) = LOWER(?) THEN 0 WHEN m.title LIKE ? THEN 1 WHEN s.name LIKE ? THEN 2 ELSE 3 END, m.published_at DESC, m.id ASC",
+			first := "$" + strconv.Itoa(firstPlaceholder)
+			second := "$" + strconv.Itoa(firstPlaceholder+1)
+			third := "$" + strconv.Itoa(firstPlaceholder+2)
+			return " ORDER BY CASE WHEN LOWER(m.title) = LOWER(" + first + ") THEN 0 WHEN m.title ILIKE " + second + " THEN 1 WHEN s.name ILIKE " + third + " THEN 2 ELSE 3 END, m.published_at DESC, m.id ASC",
 				[]any{query.Search, search, search}
 		}
 	}
 	return " ORDER BY m.published_at DESC, m.id ASC", nil
+}
+
+func appendPostgresArg(args *[]any, value any) string {
+	*args = append(*args, value)
+	return "$" + strconv.Itoa(len(*args))
 }
 
 func nullableString(value sql.NullString) *string {

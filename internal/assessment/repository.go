@@ -9,6 +9,36 @@ import (
 	"time"
 )
 
+const createAttemptQuery = `INSERT INTO assessment_attempts (
+     id, student_id, package_id, status, started_at, deadline_at,
+     submitted_at, finish_reason, score, earned_points, total_points,
+     answered_count, correct_count, wrong_count, unanswered_count,
+     duration_seconds, passed, scoring_policy_version, created_at, updated_at
+ )
+ VALUES (
+     $1, $2, $3, 'IN_PROGRESS', statement_timestamp(),
+     statement_timestamp() + ($4::BIGINT * INTERVAL '1 second'),
+     NULL, NULL, NULL, NULL, $5, 0, 0, 0, $6, NULL, NULL, $7,
+     statement_timestamp(), statement_timestamp()
+ )`
+
+const createAttemptAnswersQuery = `INSERT INTO attempt_answers (
+     attempt_id, package_id, question_id, selected_option_key, flagged,
+     answered_at, is_correct, earned_points, evaluated_at
+ )
+ SELECT $1, pq.package_id, pq.question_id, NULL, FALSE, NULL, NULL, pq.points, NULL
+ FROM package_questions pq
+ WHERE pq.package_id = $2`
+
+const finalizeAttemptQuery = `UPDATE assessment_attempts
+ SET status = $1, submitted_at = statement_timestamp(), finish_reason = $2,
+     score = $3, earned_points = $4, answered_count = $5, correct_count = $6,
+     wrong_count = $7, unanswered_count = $8,
+     duration_seconds = GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (statement_timestamp() - started_at)))::BIGINT),
+     passed = NULL, scoring_policy_version = $9,
+     updated_at = statement_timestamp()
+ WHERE id = $10 AND status = 'IN_PROGRESS' AND active_marker = 1`
+
 type Repository struct {
 	db *sql.DB
 }
@@ -32,7 +62,7 @@ func (r *Repository) LockStudentTx(ctx context.Context, tx *sql.Tx, studentID st
 	var id string
 	return tx.QueryRowContext(ctx,
 		`SELECT id FROM users
-		 WHERE id = ? AND role = 'STUDENT' AND status = 'ACTIVE'
+		 WHERE id = $1 AND role = 'STUDENT' AND status = 'ACTIVE'
 		 FOR UPDATE`,
 		studentID,
 	).Scan(&id)
@@ -42,7 +72,7 @@ func (r *Repository) FindActiveAttemptTx(ctx context.Context, tx *sql.Tx, studen
 	var attemptID string
 	err := tx.QueryRowContext(ctx,
 		`SELECT id FROM assessment_attempts
-		 WHERE student_id = ? AND package_id = ?
+		 WHERE student_id = $1 AND package_id = $2
 		   AND status = 'IN_PROGRESS' AND active_marker = 1
 		 FOR UPDATE`,
 		studentID, packageID,
@@ -61,8 +91,8 @@ func (r *Repository) LoadPublishedPackageTx(ctx context.Context, tx *sql.Tx, pac
 		 FROM assessment_packages p
 		 JOIN subjects s ON s.id = p.subject_id
 		 LEFT JOIN materials m ON m.id = p.material_id
-		 WHERE p.id = ? AND p.status = 'PUBLISHED'
-		 FOR UPDATE`,
+		 WHERE p.id = $1 AND p.status = 'PUBLISHED'
+		 FOR UPDATE OF p`,
 		packageID,
 	).Scan(
 		&item.ID, &item.Slug, &item.Title, &item.Kind, &item.EducationLevel, &item.Grade,
@@ -79,7 +109,7 @@ func (r *Repository) LoadPublishedPackageTx(ctx context.Context, tx *sql.Tx, pac
 	var invalidQuestions sql.NullInt64
 	err = tx.QueryRowContext(ctx,
 		`SELECT COUNT(*),
-		        CAST(COALESCE(SUM(pq.points), 0) AS CHAR),
+		        CAST(COALESCE(SUM(pq.points), 0) AS TEXT),
 		        COALESCE(SUM(CASE
 		            WHEN q.id IS NULL
 		              OR q.status <> 'PUBLISHED'
@@ -100,7 +130,7 @@ func (r *Repository) LoadPublishedPackageTx(ctx context.Context, tx *sql.Tx, pac
 		     FROM question_options
 		     GROUP BY question_id
 		 ) option_counts ON option_counts.question_id = q.id
-		 WHERE pq.package_id = ?`,
+		 WHERE pq.package_id = $1`,
 		packageID,
 	).Scan(&item.QuestionCount, &item.TotalPoints, &invalidQuestions)
 	if err != nil {
@@ -121,10 +151,10 @@ func (r *Repository) HasPackageAccessTx(ctx context.Context, tx *sql.Tx, student
 		     p.access_tier = 'FREE'
 		     OR EXISTS (
 		         SELECT 1 FROM access_grants package_grant
-		         WHERE package_grant.student_id = ?
+		         WHERE package_grant.student_id = $1
 		           AND package_grant.package_id = p.id
-		           AND package_grant.starts_at <= UTC_TIMESTAMP(6)
-		           AND (package_grant.expires_at IS NULL OR package_grant.expires_at > UTC_TIMESTAMP(6))
+		           AND package_grant.starts_at <= statement_timestamp()
+		           AND (package_grant.expires_at IS NULL OR package_grant.expires_at > statement_timestamp())
 		     )
 		 )
 		 AND (
@@ -132,15 +162,15 @@ func (r *Repository) HasPackageAccessTx(ctx context.Context, tx *sql.Tx, student
 		     OR m.access_tier = 'FREE'
 		     OR EXISTS (
 		         SELECT 1 FROM access_grants material_grant
-		         WHERE material_grant.student_id = ?
+		         WHERE material_grant.student_id = $2
 		           AND material_grant.material_id = m.id
-		           AND material_grant.starts_at <= UTC_TIMESTAMP(6)
-		           AND (material_grant.expires_at IS NULL OR material_grant.expires_at > UTC_TIMESTAMP(6))
+		           AND material_grant.starts_at <= statement_timestamp()
+		           AND (material_grant.expires_at IS NULL OR material_grant.expires_at > statement_timestamp())
 		     )
 		 )
 		 FROM assessment_packages p
 		 LEFT JOIN materials m ON m.id = p.material_id
-		 WHERE p.id = ? AND p.status = 'PUBLISHED'`,
+		 WHERE p.id = $3 AND p.status = 'PUBLISHED'`,
 		studentID, studentID, packageID,
 	).Scan(&allowed)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -151,18 +181,7 @@ func (r *Repository) HasPackageAccessTx(ctx context.Context, tx *sql.Tx, student
 
 func (r *Repository) CreateAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, studentID string, item packageRecord) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO assessment_attempts (
-		     id, student_id, package_id, status, started_at, deadline_at,
-		     submitted_at, finish_reason, score, earned_points, total_points,
-		     answered_count, correct_count, wrong_count, unanswered_count,
-		     duration_seconds, passed, scoring_policy_version, created_at, updated_at
-		 )
-		 VALUES (
-		     ?, ?, ?, 'IN_PROGRESS', UTC_TIMESTAMP(6),
-		     TIMESTAMPADD(SECOND, ?, UTC_TIMESTAMP(6)),
-		     NULL, NULL, NULL, NULL, ?, 0, 0, 0, ?, NULL, NULL, ?,
-		     UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)
-		 )`,
+		createAttemptQuery,
 		attemptID, studentID, item.ID, item.DurationSeconds,
 		item.TotalPoints, item.QuestionCount, scoringPolicyVersion,
 	)
@@ -173,13 +192,7 @@ func (r *Repository) CreateAttemptTx(ctx context.Context, tx *sql.Tx, attemptID,
 	// While an attempt is active, earned_points holds the question's snapshotted
 	// weight; finalization replaces it with the earned score for that question.
 	result, err := tx.ExecContext(ctx,
-		`INSERT INTO attempt_answers (
-		     attempt_id, package_id, question_id, selected_option_key, flagged,
-		     answered_at, is_correct, earned_points, evaluated_at
-		 )
-		 SELECT ?, pq.package_id, pq.question_id, NULL, 0, NULL, NULL, pq.points, NULL
-		 FROM package_questions pq
-		 WHERE pq.package_id = ?`,
+		createAttemptAnswersQuery,
 		attemptID, item.ID,
 	)
 	if err != nil {
@@ -204,14 +217,14 @@ func (r *Repository) LockAttemptTx(ctx context.Context, tx *sql.Tx, studentID, a
 		`SELECT a.id, a.student_id, a.package_id, a.status, a.started_at, a.deadline_at,
 		        a.submitted_at, a.finish_reason, a.score, a.earned_points, a.total_points,
 		        a.answered_count, a.correct_count, a.wrong_count, a.unanswered_count,
-		        a.duration_seconds, CAST(a.passed AS CHAR), a.scoring_policy_version,
-		        a.deadline_at <= UTC_TIMESTAMP(6),
+		        a.duration_seconds, CAST(a.passed AS TEXT), a.scoring_policy_version,
+		        a.deadline_at <= statement_timestamp(),
 		        p.slug, p.title, p.kind, p.education_level, p.grade, s.name
 		 FROM assessment_attempts a
 		 JOIN assessment_packages p ON p.id = a.package_id
 		 JOIN subjects s ON s.id = p.subject_id
-		 WHERE a.id = ? AND a.student_id = ?
-		 FOR UPDATE`,
+		 WHERE a.id = $1 AND a.student_id = $2
+		 FOR UPDATE OF a`,
 		attemptID, studentID,
 	).Scan(
 		&item.ID, &item.StudentID, &item.PackageID, &item.Status, &item.StartedAt, &item.DeadlineAt,
@@ -249,7 +262,7 @@ func (r *Repository) HasQuestionTx(ctx context.Context, tx *sql.Tx, attemptID, q
 	err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(
 		     SELECT 1 FROM attempt_answers
-		     WHERE attempt_id = ? AND question_id = ?
+		     WHERE attempt_id = $1 AND question_id = $2
 		 )`,
 		attemptID, questionID,
 	).Scan(&exists)
@@ -261,7 +274,7 @@ func (r *Repository) HasOptionTx(ctx context.Context, tx *sql.Tx, questionID, op
 	err := tx.QueryRowContext(ctx,
 		`SELECT EXISTS(
 		     SELECT 1 FROM question_options
-		     WHERE question_id = ? AND option_key = ?
+		     WHERE question_id = $1 AND option_key = $2
 		 )`,
 		questionID, optionKey,
 	).Scan(&exists)
@@ -277,15 +290,15 @@ func (r *Repository) SaveAnswerTx(ctx context.Context, tx *sql.Tx, attemptID, qu
 	}
 	_, err := tx.ExecContext(ctx,
 		`UPDATE attempt_answers
-		 SET selected_option_key = NULLIF(?, ''),
-		     flagged = ?,
-		     answered_at = CASE WHEN NULLIF(?, '') IS NULL THEN NULL ELSE UTC_TIMESTAMP(6) END
-		 WHERE attempt_id = ? AND question_id = ?
+		 SET selected_option_key = NULLIF($1, ''),
+		     flagged = $2,
+		     answered_at = CASE WHEN NULLIF($3, '') IS NULL THEN NULL ELSE statement_timestamp() END
+		 WHERE attempt_id = $4 AND question_id = $5
 		   AND EXISTS (
 		       SELECT 1 FROM assessment_attempts a
 		       WHERE a.id = attempt_answers.attempt_id
 		         AND a.status = 'IN_PROGRESS'
-		         AND a.deadline_at > UTC_TIMESTAMP(6)
+		         AND a.deadline_at > statement_timestamp()
 		   )`,
 		selected, flagged, selectedForTime, attemptID, questionID,
 	)
@@ -302,7 +315,7 @@ func (r *Repository) FindAnswerTx(ctx context.Context, tx *sql.Tx, attemptID, qu
 	err := tx.QueryRowContext(ctx,
 		`SELECT question_id, selected_option_key, flagged, answered_at
 		 FROM attempt_answers
-		 WHERE attempt_id = ? AND question_id = ?`,
+		 WHERE attempt_id = $1 AND question_id = $2`,
 		attemptID, questionID,
 	).Scan(&answer.QuestionID, &selected, &answer.Flagged, &answeredAt)
 	if err != nil {
@@ -321,9 +334,9 @@ func (r *Repository) LoadAttemptQuestionsTx(ctx context.Context, tx *sql.Tx, att
 		        o.option_key, o.label
 		 FROM package_questions pq
 		 JOIN questions q ON q.id = pq.question_id
-		 JOIN attempt_answers aa ON aa.attempt_id = ? AND aa.question_id = pq.question_id
+		 JOIN attempt_answers aa ON aa.attempt_id = $1 AND aa.question_id = pq.question_id
 		 LEFT JOIN question_options o ON o.question_id = q.id
-		 WHERE pq.package_id = ? AND aa.package_id = ?
+		 WHERE pq.package_id = $2 AND aa.package_id = $3
 		 ORDER BY pq.position, o.position`,
 		attemptID, packageID, packageID,
 	)
@@ -387,7 +400,7 @@ func (r *Repository) LoadScoringQuestionsTx(ctx context.Context, tx *sql.Tx, att
 		 LEFT JOIN question_options correct_option
 		   ON correct_option.question_id = q.id
 		  AND correct_option.option_key = answer_key.correct_option_key
-		 WHERE a.id = ? AND a.package_id = ?
+		 WHERE a.id = $1 AND a.package_id = $2
 		 ORDER BY pq.position`,
 		attemptID, packageID,
 	)
@@ -426,8 +439,8 @@ func (r *Repository) LoadScoringQuestionsTx(ctx context.Context, tx *sql.Tx, att
 func (r *Repository) SaveEvaluatedAnswerTx(ctx context.Context, tx *sql.Tx, attemptID, questionID string, correct bool, earnedPoints string) error {
 	_, err := tx.ExecContext(ctx,
 		`UPDATE attempt_answers
-		 SET is_correct = ?, earned_points = ?, evaluated_at = UTC_TIMESTAMP(6)
-		 WHERE attempt_id = ? AND question_id = ?`,
+		 SET is_correct = $1, earned_points = $2, evaluated_at = statement_timestamp()
+		 WHERE attempt_id = $3 AND question_id = $4`,
 		correct, earnedPoints, attemptID, questionID,
 	)
 	return err
@@ -435,14 +448,7 @@ func (r *Repository) SaveEvaluatedAnswerTx(ctx context.Context, tx *sql.Tx, atte
 
 func (r *Repository) FinalizeAttemptTx(ctx context.Context, tx *sql.Tx, attemptID, status, finishReason string, score scoreSummary) error {
 	result, err := tx.ExecContext(ctx,
-		`UPDATE assessment_attempts
-		 SET status = ?, submitted_at = UTC_TIMESTAMP(6), finish_reason = ?,
-		     score = ?, earned_points = ?, answered_count = ?, correct_count = ?,
-		     wrong_count = ?, unanswered_count = ?,
-		     duration_seconds = GREATEST(0, TIMESTAMPDIFF(SECOND, started_at, UTC_TIMESTAMP(6))),
-		     passed = NULL, scoring_policy_version = ?,
-		     updated_at = UTC_TIMESTAMP(6)
-		 WHERE id = ? AND status = 'IN_PROGRESS' AND active_marker = 1`,
+		finalizeAttemptQuery,
 		status, finishReason, score.Score, score.EarnedPoints,
 		score.AnsweredCount, score.CorrectCount, score.WrongCount, score.UnansweredCount,
 		scoringPolicyVersion, attemptID,
@@ -463,7 +469,7 @@ func (r *Repository) FinalizeAttemptTx(ctx context.Context, tx *sql.Tx, attemptI
 func (r *Repository) RemainingSecondsTx(ctx context.Context, tx *sql.Tx, deadline time.Time) (int64, error) {
 	var remaining int64
 	err := tx.QueryRowContext(ctx,
-		`SELECT GREATEST(0, TIMESTAMPDIFF(SECOND, UTC_TIMESTAMP(6), ?))`,
+		`SELECT GREATEST(0, FLOOR(EXTRACT(EPOCH FROM ($1 - statement_timestamp())))::BIGINT)`,
 		deadline.UTC(),
 	).Scan(&remaining)
 	return remaining, err
@@ -475,8 +481,8 @@ func (r *Repository) ExpiredAttemptIDs(ctx context.Context, studentID string) ([
 	}
 	rows, err := r.db.QueryContext(ctx,
 		`SELECT id FROM assessment_attempts
-		 WHERE student_id = ? AND status = 'IN_PROGRESS'
-		   AND deadline_at <= UTC_TIMESTAMP(6)
+		 WHERE student_id = $1 AND status = 'IN_PROGRESS'
+		   AND deadline_at <= statement_timestamp()
 		 ORDER BY deadline_at, id`,
 		studentID,
 	)
@@ -501,7 +507,7 @@ func (r *Repository) CountAttempts(ctx context.Context, studentID string) (int64
 	}
 	var total int64
 	err := r.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM assessment_attempts WHERE student_id = ?`,
+		`SELECT COUNT(*) FROM assessment_attempts WHERE student_id = $1`,
 		studentID,
 	).Scan(&total)
 	return total, err
@@ -515,14 +521,14 @@ func (r *Repository) ListAttempts(ctx context.Context, studentID string, query p
 		`SELECT a.id, a.student_id, a.package_id, a.status, a.started_at, a.deadline_at,
 		        a.submitted_at, a.finish_reason, a.score, a.earned_points, a.total_points,
 		        a.answered_count, a.correct_count, a.wrong_count, a.unanswered_count,
-		        a.duration_seconds, CAST(a.passed AS CHAR), a.scoring_policy_version, 0,
+		        a.duration_seconds, CAST(a.passed AS TEXT), a.scoring_policy_version, FALSE,
 		        p.slug, p.title, p.kind, p.education_level, p.grade, s.name
 		 FROM assessment_attempts a
 		 JOIN assessment_packages p ON p.id = a.package_id
 		 JOIN subjects s ON s.id = p.subject_id
-		 WHERE a.student_id = ?
+		 WHERE a.student_id = $1
 		 ORDER BY a.started_at DESC, a.id DESC
-		 LIMIT ? OFFSET ?`,
+		 LIMIT $2 OFFSET $3`,
 		studentID, query.PageSize, query.Offset,
 	)
 	if err != nil {

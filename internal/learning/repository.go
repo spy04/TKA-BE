@@ -6,6 +6,26 @@ import (
 	"time"
 )
 
+const saveProgressQuery = `INSERT INTO lesson_progress (
+     student_id, lesson_id, last_position_seconds, completed_at, last_accessed_at, updated_at
+ )
+ SELECT $1, l.id, $2, $3, statement_timestamp(), statement_timestamp()
+ FROM lessons l
+ JOIN chapters c ON c.id = l.chapter_id
+ JOIN materials m ON m.id = c.material_id
+ WHERE l.id = $4 AND m.status = 'PUBLISHED'
+   AND (m.access_tier = 'FREE' OR EXISTS (
+       SELECT 1 FROM access_grants ag
+       WHERE ag.student_id = $5 AND ag.material_id = m.id
+         AND ag.starts_at <= statement_timestamp()
+         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
+   ))
+ ON CONFLICT (student_id, lesson_id) DO UPDATE SET
+     last_position_seconds = EXCLUDED.last_position_seconds,
+     completed_at = COALESCE(lesson_progress.completed_at, EXCLUDED.completed_at),
+     last_accessed_at = statement_timestamp(),
+     updated_at = statement_timestamp()`
+
 type Repository struct {
 	db *sql.DB
 }
@@ -28,7 +48,7 @@ func (r *Repository) FindStudentProfile(ctx context.Context, studentID string) (
 		`SELECT u.id, p.display_name, p.education_level, p.grade, p.school, p.curriculum
 		 FROM users u
 		 JOIN student_profiles p ON p.user_id = u.id
-		 WHERE u.id = ? AND u.role = 'STUDENT' AND u.status = 'ACTIVE'`,
+		 WHERE u.id = $1 AND u.role = 'STUDENT' AND u.status = 'ACTIVE'`,
 		studentID,
 	).Scan(
 		&profile.ID, &profile.DisplayName, &profile.EducationLevel, &profile.Grade, &school, &curriculum,
@@ -54,13 +74,13 @@ func (r *Repository) ListStartedMaterials(ctx context.Context, studentID string)
 		 JOIN subjects s ON s.id = m.subject_id
 		 JOIN chapters c ON c.material_id = m.id
 		 JOIN lessons l ON l.chapter_id = c.id
-		 LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.student_id = ?
+		 LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.student_id = $1
 		 WHERE m.status = 'PUBLISHED'
 		   AND (m.access_tier = 'FREE' OR EXISTS (
 		       SELECT 1 FROM access_grants ag
-		       WHERE ag.student_id = ? AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		       WHERE ag.student_id = $2 AND ag.material_id = m.id
+		         AND ag.starts_at <= statement_timestamp()
+		         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		   ))
 		 GROUP BY m.id, m.slug, m.title, s.name, m.education_level, m.grade, m.access_tier
 		 HAVING COUNT(lp.lesson_id) > 0
@@ -106,13 +126,13 @@ func (r *Repository) FindMaterialLearning(ctx context.Context, studentID, slug s
 		 JOIN subjects s ON s.id = m.subject_id
 		 LEFT JOIN chapters c ON c.material_id = m.id
 		 LEFT JOIN lessons l ON l.chapter_id = c.id
-		 LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.student_id = ?
-		 WHERE m.slug = ? AND m.status = 'PUBLISHED'
+		 LEFT JOIN lesson_progress lp ON lp.lesson_id = l.id AND lp.student_id = $1
+		 WHERE m.slug = $2 AND m.status = 'PUBLISHED'
 		   AND (m.access_tier = 'FREE' OR EXISTS (
 		       SELECT 1 FROM access_grants ag
-		       WHERE ag.student_id = ? AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		       WHERE ag.student_id = $3 AND ag.material_id = m.id
+		         AND ag.starts_at <= statement_timestamp()
+		         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		   ))
 		 ORDER BY c.position, c.id, l.position, l.id`,
 		studentID, slug, studentID,
@@ -200,12 +220,12 @@ func (r *Repository) FindAccessibleLesson(ctx context.Context, studentID, lesson
 		 FROM lessons l
 		 JOIN chapters c ON c.id = l.chapter_id
 		 JOIN materials m ON m.id = c.material_id
-		 WHERE l.id = ? AND m.status = 'PUBLISHED'
+		 WHERE l.id = $1 AND m.status = 'PUBLISHED'
 		   AND (m.access_tier = 'FREE' OR EXISTS (
 		       SELECT 1 FROM access_grants ag
-		       WHERE ag.student_id = ? AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		       WHERE ag.student_id = $2 AND ag.material_id = m.id
+		         AND ag.starts_at <= statement_timestamp()
+		         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		   ))`,
 		lessonID, studentID,
 	).Scan(&lesson.ID, &lesson.DurationSeconds)
@@ -217,25 +237,7 @@ func (r *Repository) SaveProgress(ctx context.Context, studentID, lessonID strin
 		return progressRecord{}, ErrServiceUnavailable
 	}
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO lesson_progress (
-		     student_id, lesson_id, last_position_seconds, completed_at, last_accessed_at, updated_at
-		 )
-		 SELECT ?, l.id, ?, ?, UTC_TIMESTAMP(6), UTC_TIMESTAMP(6)
-		 FROM lessons l
-		 JOIN chapters c ON c.id = l.chapter_id
-		 JOIN materials m ON m.id = c.material_id
-		 WHERE l.id = ? AND m.status = 'PUBLISHED'
-		   AND (m.access_tier = 'FREE' OR EXISTS (
-		       SELECT 1 FROM access_grants ag
-		       WHERE ag.student_id = ? AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
-		   ))
-		 ON DUPLICATE KEY UPDATE
-		     last_position_seconds = VALUES(last_position_seconds),
-		     completed_at = COALESCE(lesson_progress.completed_at, VALUES(completed_at)),
-		     last_accessed_at = UTC_TIMESTAMP(6),
-		     updated_at = UTC_TIMESTAMP(6)`,
+		saveProgressQuery,
 		studentID, position, completedAt, lessonID, studentID,
 	)
 	if err != nil {
@@ -246,7 +248,7 @@ func (r *Repository) SaveProgress(ctx context.Context, studentID, lessonID strin
 	err = r.db.QueryRowContext(ctx,
 		`SELECT last_position_seconds, completed_at, last_accessed_at
 		 FROM lesson_progress
-		 WHERE student_id = ? AND lesson_id = ?`,
+		 WHERE student_id = $1 AND lesson_id = $2`,
 		studentID, lessonID,
 	).Scan(&progress.LastPositionSeconds, &completed, &progress.LastAccessedAt)
 	if err != nil {
@@ -267,12 +269,12 @@ func (r *Repository) ListNotes(ctx context.Context, studentID, lessonID string) 
 		 JOIN lessons l ON l.id = n.lesson_id
 		 JOIN chapters c ON c.id = l.chapter_id
 		 JOIN materials m ON m.id = c.material_id
-		 WHERE n.student_id = ? AND n.lesson_id = ? AND m.status = 'PUBLISHED'
+		 WHERE n.student_id = $1 AND n.lesson_id = $2 AND m.status = 'PUBLISHED'
 		   AND (m.access_tier = 'FREE' OR EXISTS (
 		       SELECT 1 FROM access_grants ag
 		       WHERE ag.student_id = n.student_id AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		         AND ag.starts_at <= statement_timestamp()
+		         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		   ))
 		 ORDER BY n.created_at DESC, n.id DESC`,
 		studentID, lessonID,
@@ -305,16 +307,16 @@ func (r *Repository) CreateNote(ctx context.Context, note learningNote, studentI
 		`INSERT INTO learning_notes (
 		     id, student_id, lesson_id, timestamp_seconds, content, created_at, updated_at
 		 )
-		 SELECT ?, ?, l.id, ?, ?, ?, ?
+		 SELECT $1, $2, l.id, $3, $4, $5, $6
 		 FROM lessons l
 		 JOIN chapters c ON c.id = l.chapter_id
 		 JOIN materials m ON m.id = c.material_id
-		 WHERE l.id = ? AND m.status = 'PUBLISHED'
+		 WHERE l.id = $7 AND m.status = 'PUBLISHED'
 		   AND (m.access_tier = 'FREE' OR EXISTS (
 		       SELECT 1 FROM access_grants ag
-		       WHERE ag.student_id = ? AND ag.material_id = m.id
-		         AND ag.starts_at <= UTC_TIMESTAMP(6)
-		         AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		       WHERE ag.student_id = $8 AND ag.material_id = m.id
+		         AND ag.starts_at <= statement_timestamp()
+		         AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		   ))`,
 		note.ID, studentID, note.Timestamp, note.Text, note.CreatedAt.UTC(), note.UpdatedAt.UTC(),
 		lessonID, studentID,
@@ -337,20 +339,20 @@ func (r *Repository) DeleteNote(ctx context.Context, studentID, lessonID, noteID
 		return false, ErrServiceUnavailable
 	}
 	result, err := r.db.ExecContext(ctx,
-		`DELETE FROM learning_notes
-		 WHERE id = ? AND lesson_id = ? AND student_id = ?
+		`DELETE FROM learning_notes AS n
+		 WHERE n.id = $1 AND n.lesson_id = $2 AND n.student_id = $3
 		   AND EXISTS (
 		       SELECT 1
 		       FROM lessons l
 		       JOIN chapters c ON c.id = l.chapter_id
 		       JOIN materials m ON m.id = c.material_id
-		       WHERE l.id = learning_notes.lesson_id
+		       WHERE l.id = n.lesson_id
 		         AND m.status = 'PUBLISHED'
 		         AND (m.access_tier = 'FREE' OR EXISTS (
 		             SELECT 1 FROM access_grants ag
-		             WHERE ag.student_id = ? AND ag.material_id = m.id
-		               AND ag.starts_at <= UTC_TIMESTAMP(6)
-		               AND (ag.expires_at IS NULL OR ag.expires_at > UTC_TIMESTAMP(6))
+		             WHERE ag.student_id = $4 AND ag.material_id = m.id
+		               AND ag.starts_at <= statement_timestamp()
+		               AND (ag.expires_at IS NULL OR ag.expires_at > statement_timestamp())
 		         ))
 		   )`,
 		noteID, lessonID, studentID, studentID,

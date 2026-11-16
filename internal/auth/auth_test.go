@@ -11,6 +11,7 @@ import (
 
 	"binasiswa/backend/internal/config"
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestPasswordHashVerification(t *testing.T) {
@@ -91,6 +92,15 @@ func TestValidateRegistrationUsesSchemaGradeRanges(t *testing.T) {
 	request.Grade = 10
 	if _, _, err := validateRegistration(&request); err == nil {
 		t.Fatal("validateRegistration() accepted a grade outside the SMP schema range")
+	}
+}
+
+func TestIsDuplicateKeyRecognizesPostgresUniqueViolation(t *testing.T) {
+	if !isDuplicateKey(&pgconn.PgError{Code: "23505"}) {
+		t.Fatal("isDuplicateKey() did not recognize a PostgreSQL unique violation")
+	}
+	if isDuplicateKey(&pgconn.PgError{Code: "23503"}) {
+		t.Fatal("isDuplicateKey() treated a non-unique PostgreSQL error as a duplicate")
 	}
 }
 
