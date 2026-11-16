@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -33,16 +32,12 @@ type AuthConfig struct {
 
 type DatabaseConfig struct {
 	Enabled            bool
-	Host               string
-	Port               int
-	User               string
-	Password           string
-	Name               string
 	MaxOpenConnections int
 	MaxIdleConnections int
 	ConnectionLifetime time.Duration
 	ConnectionIdleTime time.Duration
 	ReadyTimeout       time.Duration
+	URL                string
 }
 
 func Load() (Config, error) {
@@ -253,39 +248,30 @@ func validEnvKey(key string) bool {
 }
 
 func loadDatabaseConfig() (DatabaseConfig, error) {
-	host := strings.TrimSpace(os.Getenv("DB_HOST"))
-	user := strings.TrimSpace(os.Getenv("DB_USER"))
-	name := strings.TrimSpace(os.Getenv("DB_NAME"))
-	password := os.Getenv("DB_PASSWORD")
-
-	configured := host != "" || user != "" || name != "" || password != ""
-	if !configured {
+	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
+	if databaseURL == "" {
+		for _, key := range []string{"DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD"} {
+			if strings.TrimSpace(os.Getenv(key)) != "" {
+				return DatabaseConfig{}, fmt.Errorf("DATABASE_URL is required; DB_* connection settings are not supported")
+			}
+		}
 		return DatabaseConfig{}, nil
 	}
-	if host == "" || user == "" || name == "" {
-		return DatabaseConfig{}, fmt.Errorf("DB_HOST, DB_USER, and DB_NAME must all be set when configuring MariaDB")
-	}
 
-	port, err := envInt("DB_PORT", 3306)
-	if err != nil {
-		return DatabaseConfig{}, err
-	}
-	if port < 1 || port > 65535 {
-		return DatabaseConfig{}, fmt.Errorf("DB_PORT must be between 1 and 65535")
+	parsedURL, err := url.Parse(databaseURL)
+	if err != nil || (parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql") ||
+		parsedURL.Hostname() == "" || parsedURL.Path == "" {
+		return DatabaseConfig{}, fmt.Errorf("DATABASE_URL must be a PostgreSQL connection URL")
 	}
 
 	db := DatabaseConfig{
 		Enabled:            true,
-		Host:               host,
-		Port:               port,
-		User:               user,
-		Password:           password,
-		Name:               name,
 		MaxOpenConnections: 25,
 		MaxIdleConnections: 5,
 		ConnectionLifetime: 5 * time.Minute,
 		ConnectionIdleTime: time.Minute,
 		ReadyTimeout:       2 * time.Second,
+		URL:                databaseURL,
 	}
 	if db.MaxOpenConnections, err = envInt("DB_MAX_OPEN_CONNS", db.MaxOpenConnections); err != nil {
 		return DatabaseConfig{}, err
@@ -377,6 +363,3 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	return parsed, nil
 }
 
-func (c DatabaseConfig) TCPAddress() string {
-	return net.JoinHostPort(c.Host, strconv.Itoa(c.Port))
-}

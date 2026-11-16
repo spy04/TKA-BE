@@ -36,7 +36,7 @@ func run() error {
 	if cfg.Database.Enabled {
 		db, err = database.Open(cfg.Database)
 		if err != nil {
-			return fmt.Errorf("configure MariaDB connection: %w", err)
+			return fmt.Errorf("configure PostgreSQL connection: %w", err)
 		}
 		defer db.Close()
 	}

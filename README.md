@@ -1,17 +1,17 @@
 # BinaSiswa Backend
 
-Go API for BinaSiswa, built with Gin and `database/sql` over MariaDB. The current API includes health/readiness, authentication, published catalogs, student learning, and assessment attempts/results. It does not create or migrate database tables.
+Go API for BinaSiswa, built with Gin and `database/sql`. The current API includes health/readiness, authentication, published catalogs, student learning, and assessment attempts/results. It does not create or migrate database tables.
 
 ## Requirements
 
 - Go 1.25.5 or newer
-- MariaDB is optional for starting the API and required for `/ready` to return ready
+- PostgreSQL is optional for starting the API and required for `/ready` to return ready
 
 ## Run locally
 
 From the `backend` directory, the application loads `.env` automatically when `APP_ENV` is `development` (the default). Existing process environment variables always take precedence, including variables explicitly set to an empty value. `.env` is not loaded in non-development environments; configure those values through the runtime environment instead.
 
-To run without MariaDB, leave the `DB_HOST`, `DB_USER`, and `DB_NAME` values unset or empty:
+To run without a database, leave `DATABASE_URL` unset or empty:
 
 ```powershell
 $env:APP_ADDR = ":8080"
@@ -25,9 +25,9 @@ Invoke-RestMethod http://localhost:8080/health
 Invoke-RestMethod http://localhost:8080/ready
 ```
 
-`/health` reports whether the process is serving requests. `/ready` returns HTTP 503 with `database: not_configured` when database settings are absent.
+`/health` reports whether the process is serving requests. `/ready` returns HTTP 503 with `database: not_configured` when `DATABASE_URL` is absent.
 
-To enable the MariaDB readiness check, configure `DB_HOST`, `DB_USER`, and `DB_NAME` (and `DB_PASSWORD` if needed). The connection uses `utf8mb4` and UTC. Startup does not require MariaDB to be reachable; `/ready` reports HTTP 503 until a ping succeeds.
+To enable PostgreSQL readiness checks, configure `DATABASE_URL` with a PostgreSQL connection URL. Startup does not require PostgreSQL to be reachable; `/ready` reports HTTP 503 until a ping succeeds.
 
 `CORS_ALLOWED_ORIGINS` is a comma-separated list of exact origins, for example `http://localhost:5173`. Wildcard origins are not supported.
 
@@ -40,26 +40,22 @@ To enable the MariaDB readiness check, configure `DB_HOST`, `DB_USER`, and `DB_N
 | `APP_REQUEST_TIMEOUT` | `30s` | Maximum request execution time |
 | `APP_SHUTDOWN_TIMEOUT` | `10s` | Graceful shutdown deadline |
 | `CORS_ALLOWED_ORIGINS` | empty | Comma-separated exact browser origins |
-| `DB_HOST` | empty | MariaDB host; database is disabled if all required DB settings are empty |
-| `DB_PORT` | `3306` | MariaDB TCP port |
-| `DB_USER` | empty | MariaDB username |
-| `DB_PASSWORD` | empty | MariaDB password; keep it outside source control |
-| `DB_NAME` | empty | MariaDB database name |
+| `DATABASE_URL` | empty | PostgreSQL connection URL; database is disabled when empty |
 | `DB_MAX_OPEN_CONNS` | `25` | Maximum open database connections |
 | `DB_MAX_IDLE_CONNS` | `5` | Maximum idle database connections |
 | `DB_CONN_MAX_LIFETIME` | `5m` | Maximum lifetime of a pooled connection |
 | `DB_CONN_MAX_IDLE_TIME` | `1m` | Maximum idle time of a pooled connection |
-| `DB_READY_TIMEOUT` | `2s` | Timeout for the MariaDB readiness ping |
+| `DB_READY_TIMEOUT` | `2s` | Timeout for the PostgreSQL readiness ping |
 | `AUTH_ACCESS_TOKEN_SECRET` | generated in development | HMAC secret; at least 32 bytes and required outside development |
 | `AUTH_ACCESS_TOKEN_TTL` | `15m` | Access-token lifetime |
 | `AUTH_REFRESH_TOKEN_TTL` | `720h` | Refresh-session lifetime; must exceed access-token lifetime |
 
-Database settings are optional for process startup. If any of `DB_HOST`, `DB_USER`, or `DB_NAME` is provided, all three are required.
+Database settings are optional for process startup. The old `DB_*` connection settings for MariaDB are no longer supported.
 
 ## Routes
 
-- `GET /health` — process health; does not contact MariaDB.
-- `GET /ready` — readiness; returns HTTP 200 only when MariaDB is configured and reachable.
+- `GET /health` — process health; does not contact PostgreSQL.
+- `GET /ready` — readiness; returns HTTP 200 only when PostgreSQL is configured and reachable.
 - `POST /api/v1/auth/register` — create a student account and session.
 - `POST /api/v1/auth/login` — authenticate and issue an access token.
 - `POST /api/v1/auth/refresh` — rotate the refresh session and issue a new access token.
@@ -89,7 +85,7 @@ No schema, tables, or migrations are created by this application. The database m
 
 ## Database conventions
 
-Database access uses context-aware `database/sql` methods and MariaDB `?` placeholders; user-controlled values are never interpolated into SQL. Registration and refresh-session rotation use transactions. Assessment start, answer writes, expiry finalization, and submission use transactions and lock the owned attempt row. The server/database clock determines deadlines; expired attempts are finalized when accessed or during history retrieval. Assessment scores are calculated server-side from per-question weights, and keys/explanations are only selected for finalization and finalized results. Since no pass threshold is configured, `passed` remains `NULL` rather than inferring a pass/fail decision. Timestamps are handled in UTC. Catalog queries only return published rows and never select question answer keys.
+Repositories currently contain MariaDB-specific SQL (`?` placeholders and MariaDB date/upsert functions). They must be ported and tested for PostgreSQL before API queries can safely run against the PostgreSQL connection. Registration and refresh-session rotation use transactions. Assessment start, answer writes, expiry finalization, and submission use transactions and lock the owned attempt row. The server/database clock determines deadlines; expired attempts are finalized when accessed or during history retrieval. Assessment scores are calculated server-side from per-question weights, and keys/explanations are only selected for finalization and finalized results. Since no pass threshold is configured, `passed` remains `NULL` rather than inferring a pass/fail decision. Timestamps are handled in UTC. Catalog queries only return published rows and never select question answer keys.
 
 ## Code structure
 
@@ -100,6 +96,6 @@ The existing authentication and catalog modules use a Model–Handler–Service�
 - `internal/assessment` follows the same layers for attempt lifecycle, saved answers, server-side scoring, results, and history.
 - `handler.go` handles Gin requests, validates HTTP input, and writes API responses.
 - `service.go` coordinates business rules and authentication/catalog/learning/assessment operations.
-- `repository.go` owns MariaDB queries through `database/sql`.
+- `repository.go` owns database queries through `database/sql`.
 - `auth/password.go` and `auth/token.go` contain authentication-specific cryptographic utilities.
 - `internal/platform/http` wires repositories, services, and handlers through constructors.

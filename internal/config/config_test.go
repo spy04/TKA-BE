@@ -9,6 +9,7 @@ import (
 func clearDatabaseEnvironment(t *testing.T) {
 	t.Helper()
 	for _, key := range []string{
+		"DATABASE_URL",
 		"DB_HOST",
 		"DB_PORT",
 		"DB_USER",
@@ -43,6 +44,32 @@ func TestLoadRejectsPartialDatabaseConfiguration(t *testing.T) {
 
 	if _, err := Load(); err == nil {
 		t.Fatal("Load() error = nil, want partial database configuration error")
+	}
+}
+
+func TestLoadEnablesPostgresFromDatabaseURL(t *testing.T) {
+	clearDatabaseEnvironment(t)
+	t.Setenv("CORS_ALLOWED_ORIGINS", "")
+	t.Setenv("DATABASE_URL", "postgresql://user:password@localhost:5432/binasiswa")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.Database.Enabled {
+		t.Fatal("database should be enabled when DATABASE_URL is set")
+	}
+	if cfg.Database.URL != "postgresql://user:password@localhost:5432/binasiswa" {
+		t.Fatal("DATABASE_URL was not preserved in the database configuration")
+	}
+}
+
+func TestLoadRejectsNonPostgresDatabaseURL(t *testing.T) {
+	clearDatabaseEnvironment(t)
+	t.Setenv("DATABASE_URL", "mysql://user:password@localhost:3306/binasiswa")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load() error = nil, want unsupported database URL error")
 	}
 }
 

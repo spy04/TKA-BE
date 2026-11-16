@@ -2,10 +2,10 @@ package database
 
 import (
 	"database/sql"
-	"time"
 
 	"binasiswa/backend/internal/config"
-	mysql "github.com/go-sql-driver/mysql"
+
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
 func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
@@ -13,23 +13,7 @@ func Open(cfg config.DatabaseConfig) (*sql.DB, error) {
 		return nil, nil
 	}
 
-	driverConfig := mysql.Config{
-		User:                 cfg.User,
-		Passwd:               cfg.Password,
-		Net:                  "tcp",
-		Addr:                 cfg.TCPAddress(),
-		DBName:               cfg.Name,
-		ParseTime:            true,
-		Loc:                  time.UTC,
-		Collation:            "utf8mb4_unicode_ci",
-		AllowNativePasswords: true,
-		Params: map[string]string{
-			"charset":   "utf8mb4",
-			"time_zone": "'+00:00'",
-		},
-	}
-
-	db, err := sql.Open("mysql", driverConfig.FormatDSN())
+	db, err := sql.Open("pgx", cfg.URL)
 	if err != nil {
 		return nil, err
 	}
