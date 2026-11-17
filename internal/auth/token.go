@@ -2,10 +2,8 @@ package auth
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,16 +89,6 @@ func (m tokenManager) verify(token string) (tokenClaims, error) {
 		return tokenClaims{}, errors.New("invalid token")
 	}
 	return claims, nil
-}
-
-func newRefreshToken() (string, string, error) {
-	value := make([]byte, 32)
-	if _, err := rand.Read(value); err != nil {
-		return "", "", fmt.Errorf("generate refresh token: %w", err)
-	}
-	token := base64.RawURLEncoding.EncodeToString(value)
-	hash := sha256.Sum256([]byte(token))
-	return token, hex.EncodeToString(hash[:]), nil
 }
 
 func encodeSegment(value []byte) (string, error) {

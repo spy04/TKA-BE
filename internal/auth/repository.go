@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -46,19 +45,6 @@ func (r *Repository) CreateStudentProfile(ctx context.Context, tx *sql.Tx, userI
 		 VALUES ($1, $2, $3, $4, $5, $6)`,
 		userID, request.DisplayName, level, request.Grade,
 		nullableTrimmed(request.School), nullableTrimmed(request.Curriculum),
-	)
-	return err
-}
-
-func (r *Repository) CreateSession(ctx context.Context, tx *sql.Tx, sessionID, userID, refreshHash string, expiresAt time.Time, rotatedFromID string) error {
-	var rotatedFrom any
-	if rotatedFromID != "" {
-		rotatedFrom = rotatedFromID
-	}
-	_, err := tx.ExecContext(ctx,
-		`INSERT INTO auth_sessions (id, user_id, refresh_token_hash, expires_at, rotated_from_id)
-		 VALUES ($1, $2, $3, $4, $5)`,
-		sessionID, userID, refreshHash, expiresAt.UTC(), rotatedFrom,
 	)
 	return err
 }
@@ -141,46 +127,6 @@ func (r *Repository) FindUserByID(ctx context.Context, userID string) (userRecor
 		}
 	}
 	return user, nil
-}
-
-func (r *Repository) FindSessionForUpdate(ctx context.Context, tx *sql.Tx, refreshHash string) (authSession, error) {
-	var session authSession
-	var revokedAt sql.NullTime
-	err := tx.QueryRowContext(ctx,
-		`SELECT s.id, s.user_id, s.expires_at, s.revoked_at, u.email, u.role, u.status, u.created_at
-		 FROM auth_sessions s
-		 JOIN users u ON u.id = s.user_id
-		 WHERE s.refresh_token_hash = $1
-		 FOR UPDATE`,
-		refreshHash,
-	).Scan(&session.ID, &session.UserID, &session.ExpiresAt, &revokedAt,
-		&session.Email, &session.Role, &session.Status, &session.CreatedAt)
-	if revokedAt.Valid {
-		session.RevokedAt = &revokedAt.Time
-	}
-	return session, err
-}
-
-func (r *Repository) RevokeSession(ctx context.Context, tx *sql.Tx, sessionID string, revokedAt time.Time) (int64, error) {
-	result, err := tx.ExecContext(ctx,
-		`UPDATE auth_sessions SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL`,
-		revokedAt.UTC(), sessionID,
-	)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
-
-func (r *Repository) RevokeRefreshToken(ctx context.Context, refreshHash string, revokedAt time.Time) error {
-	if !r.available() {
-		return ErrServiceUnavailable
-	}
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE auth_sessions SET revoked_at = $1 WHERE refresh_token_hash = $2 AND revoked_at IS NULL`,
-		revokedAt.UTC(), refreshHash,
-	)
-	return err
 }
 
 func nullStringPointer(value sql.NullString) *string {

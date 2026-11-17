@@ -26,8 +26,6 @@ type Config struct {
 type AuthConfig struct {
 	AccessTokenSecret string
 	AccessTokenTTL    time.Duration
-	RefreshTokenTTL   time.Duration
-	SecureCookies     bool
 }
 
 type DatabaseConfig struct {
@@ -80,21 +78,12 @@ func Load() (Config, error) {
 
 func loadAuthConfig(environment string) (AuthConfig, error) {
 	auth := AuthConfig{
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 30 * 24 * time.Hour,
-		SecureCookies:   !strings.EqualFold(environment, "development"),
+		AccessTokenTTL: 15 * time.Minute,
 	}
 	var err error
 	if auth.AccessTokenTTL, err = envDuration("AUTH_ACCESS_TOKEN_TTL", auth.AccessTokenTTL); err != nil {
 		return AuthConfig{}, err
 	}
-	if auth.RefreshTokenTTL, err = envDuration("AUTH_REFRESH_TOKEN_TTL", auth.RefreshTokenTTL); err != nil {
-		return AuthConfig{}, err
-	}
-	if auth.RefreshTokenTTL <= auth.AccessTokenTTL {
-		return AuthConfig{}, fmt.Errorf("AUTH_REFRESH_TOKEN_TTL must exceed AUTH_ACCESS_TOKEN_TTL")
-	}
-
 	auth.AccessTokenSecret = os.Getenv("AUTH_ACCESS_TOKEN_SECRET")
 	if auth.AccessTokenSecret == "" && !strings.EqualFold(environment, "development") {
 		return AuthConfig{}, fmt.Errorf("AUTH_ACCESS_TOKEN_SECRET is required outside development")
@@ -362,4 +351,3 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	}
 	return parsed, nil
 }
-

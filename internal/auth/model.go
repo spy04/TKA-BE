@@ -6,12 +6,11 @@ import (
 )
 
 var (
-	ErrServiceUnavailable  = errors.New("authentication service unavailable")
-	ErrDuplicateEmail      = errors.New("email already exists")
-	ErrInvalidCredentials  = errors.New("invalid credentials")
-	ErrInvalidAccessToken  = errors.New("invalid access token")
-	ErrAccountUnavailable  = errors.New("account unavailable")
-	ErrInvalidRefreshToken = errors.New("invalid refresh token")
+	ErrServiceUnavailable = errors.New("authentication service unavailable")
+	ErrDuplicateEmail     = errors.New("email already exists")
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrInvalidAccessToken = errors.New("invalid access token")
+	ErrAccountUnavailable = errors.New("account unavailable")
 )
 
 type principal struct {
@@ -52,17 +51,6 @@ type userRecord struct {
 	Profile   *studentProfile
 }
 
-type authSession struct {
-	ID        string
-	UserID    string
-	ExpiresAt time.Time
-	RevokedAt *time.Time
-	Email     string
-	Role      string
-	Status    string
-	CreatedAt time.Time
-}
-
 type profileResponse struct {
 	DisplayName    string  `json:"displayName"`
 	EducationLevel string  `json:"educationLevel"`
@@ -87,16 +75,8 @@ type authResponse struct {
 	ExpiresIn   int64        `json:"expiresIn"`
 }
 
-type accessTokenResponse struct {
-	AccessToken string `json:"accessToken"`
-	TokenType   string `json:"tokenType"`
-	ExpiresIn   int64  `json:"expiresIn"`
-}
-
 type sessionIssue struct {
-	User             userResponse
-	AccessToken      string
-	AccessExpiresAt  time.Time
-	RefreshToken     string
-	RefreshExpiresAt time.Time
+	User            userResponse
+	AccessToken     string
+	AccessExpiresAt time.Time
 }

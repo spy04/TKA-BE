@@ -16,7 +16,6 @@ import (
 	"binasiswa/backend/internal/platform/httpx"
 )
 
-const refreshCookieName = "binasiswa_refresh"
 const principalContextKey = "auth_principal"
 
 type Handler struct {
@@ -34,7 +33,6 @@ func NewHandler(service *Service, logger *slog.Logger) *Handler {
 func (h *Handler) RegisterRoutes(router gin.IRouter) {
 	router.POST("/auth/register", h.register)
 	router.POST("/auth/login", h.login)
-	router.POST("/auth/refresh", h.refresh)
 	router.POST("/auth/logout", h.logout)
 	router.GET("/me", h.RequireAuthentication(), h.me)
 }
@@ -121,7 +119,6 @@ func (h *Handler) register(c *gin.Context) {
 		}
 		return
 	}
-	h.setRefreshCookie(w, result.RefreshToken, result.RefreshExpiresAt)
 	h.writeJSON(w, http.StatusCreated, map[string]any{
 		"data": authResponse{
 			User: result.User, AccessToken: result.AccessToken, TokenType: "Bearer",
@@ -155,7 +152,6 @@ func (h *Handler) login(c *gin.Context) {
 		}
 		return
 	}
-	h.setRefreshCookie(w, result.RefreshToken, result.RefreshExpiresAt)
 	h.writeJSON(w, http.StatusOK, map[string]any{
 		"data": authResponse{
 			User: result.User, AccessToken: result.AccessToken, TokenType: "Bearer",
@@ -164,53 +160,9 @@ func (h *Handler) login(c *gin.Context) {
 	})
 }
 
-func (h *Handler) refresh(c *gin.Context) {
-	w, r := c.Writer, c.Request
-	w.Header().Set("Cache-Control", "no-store")
-	cookie, err := r.Cookie(refreshCookieName)
-	if err != nil || cookie.Value == "" {
-		h.writeError(w, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "A valid refresh session is required.")
-		return
-	}
-	result, err := h.service.Refresh(r.Context(), cookie.Value)
-	if err != nil {
-		switch {
-		case errors.Is(err, ErrInvalidRefreshToken):
-			h.writeError(w, http.StatusUnauthorized, "INVALID_REFRESH_TOKEN", "A valid refresh session is required.")
-		case errors.Is(err, ErrServiceUnavailable):
-			h.unavailable(w)
-		default:
-			h.databaseError(w, "refresh authentication session", err)
-		}
-		return
-	}
-	h.setRefreshCookie(w, result.RefreshToken, result.RefreshExpiresAt)
-	h.writeJSON(w, http.StatusOK, map[string]any{
-		"data": accessTokenResponse{
-			AccessToken: result.AccessToken, TokenType: "Bearer",
-			ExpiresIn: int64(time.Until(result.AccessExpiresAt).Seconds()),
-		},
-	})
-}
-
 func (h *Handler) logout(c *gin.Context) {
-	w, r := c.Writer, c.Request
+	w := c.Writer
 	w.Header().Set("Cache-Control", "no-store")
-	cookie, err := r.Cookie(refreshCookieName)
-	if err != nil || cookie.Value == "" {
-		h.clearRefreshCookie(w)
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	if err := h.service.Logout(r.Context(), cookie.Value); err != nil {
-		if errors.Is(err, ErrServiceUnavailable) {
-			h.unavailable(w)
-		} else {
-			h.databaseError(w, "revoke authentication session", err)
-		}
-		return
-	}
-	h.clearRefreshCookie(w)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -235,30 +187,6 @@ func (h *Handler) me(c *gin.Context) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, map[string]any{"data": user})
-}
-
-func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, expiresAt time.Time) {
-	maxAge := int(time.Until(expiresAt).Seconds())
-	if maxAge < 0 {
-		maxAge = 0
-	}
-	http.SetCookie(w, h.refreshCookie(token, expiresAt, maxAge))
-}
-
-func (h *Handler) clearRefreshCookie(w http.ResponseWriter) {
-	http.SetCookie(w, h.refreshCookie("", time.Unix(1, 0).UTC(), -1))
-}
-
-func (h *Handler) refreshCookie(value string, expiresAt time.Time, maxAge int) *http.Cookie {
-	sameSite := http.SameSiteStrictMode
-	if h.service.secureCookies {
-		sameSite = http.SameSiteNoneMode
-	}
-	return &http.Cookie{
-		Name: refreshCookieName, Value: value, Path: "/api/v1/auth",
-		Expires: expiresAt.UTC(), MaxAge: maxAge, HttpOnly: true,
-		Secure: h.service.secureCookies, SameSite: sameSite,
-	}
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {

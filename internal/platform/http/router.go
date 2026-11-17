@@ -173,7 +173,6 @@ func cors(allowedOrigins map[string]struct{}) gin.HandlerFunc {
 		header := c.Writer.Header()
 		header.Add("Vary", "Origin")
 		header.Set("Access-Control-Allow-Origin", origin)
-		header.Set("Access-Control-Allow-Credentials", "true")
 		header.Set("Access-Control-Allow-Methods", allowedMethods)
 		header.Set("Access-Control-Allow-Headers", allowedHeaders)
 		header.Set("Access-Control-Max-Age", "600")

@@ -65,8 +65,8 @@ func TestCORSAllowsConfiguredOriginOnly(t *testing.T) {
 	if got := allowedResponse.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
 		t.Fatalf("allowed origin header = %q", got)
 	}
-	if got := allowedResponse.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-		t.Fatalf("credential header = %q, want true", got)
+	if got := allowedResponse.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("credential header = %q, want empty", got)
 	}
 
 	blocked := httptest.NewRequest(http.MethodGet, "/health", nil)
@@ -93,7 +93,7 @@ func TestAPIEndpointsAreMounted(t *testing.T) {
 		{http.MethodGet, "/api/v1/assessment-packages?kind=invalid", "", http.StatusBadRequest},
 		{http.MethodPost, "/api/v1/auth/register", "", http.StatusBadRequest},
 		{http.MethodPost, "/api/v1/auth/login", "", http.StatusBadRequest},
-		{http.MethodPost, "/api/v1/auth/refresh", "", http.StatusUnauthorized},
+		{http.MethodPost, "/api/v1/auth/refresh", "", http.StatusNotFound},
 		{http.MethodPost, "/api/v1/auth/logout", "", http.StatusNoContent},
 		{http.MethodGet, "/api/v1/me", "", http.StatusUnauthorized},
 		{http.MethodGet, "/api/v1/me/overview", "", http.StatusUnauthorized},

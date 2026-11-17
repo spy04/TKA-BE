@@ -48,7 +48,6 @@ To enable PostgreSQL readiness checks, configure `DATABASE_URL` with a PostgreSQ
 | `DB_READY_TIMEOUT` | `2s` | Timeout for the PostgreSQL readiness ping |
 | `AUTH_ACCESS_TOKEN_SECRET` | generated in development | HMAC secret; at least 32 bytes and required outside development |
 | `AUTH_ACCESS_TOKEN_TTL` | `15m` | Access-token lifetime |
-| `AUTH_REFRESH_TOKEN_TTL` | `720h` | Refresh-session lifetime; must exceed access-token lifetime |
 
 Database settings are optional for process startup. The old `DB_*` connection settings for MariaDB are no longer supported.
 
@@ -58,8 +57,7 @@ Database settings are optional for process startup. The old `DB_*` connection se
 - `GET /ready` — readiness; returns HTTP 200 only when PostgreSQL is configured and reachable.
 - `POST /api/v1/auth/register` — create a student account and session.
 - `POST /api/v1/auth/login` — authenticate and issue an access token.
-- `POST /api/v1/auth/refresh` — rotate the refresh session and issue a new access token.
-- `POST /api/v1/auth/logout` — revoke the refresh session.
+- `POST /api/v1/auth/logout` — client logout acknowledgement (HTTP 204).
 - `GET /api/v1/me` — current authenticated account and student profile.
 - `GET /api/v1/materials` — published material catalog.
 - `GET /api/v1/materials/{slug}` — published material detail; premium details require a current grant or admin account.
@@ -79,7 +77,7 @@ Database settings are optional for process startup. The old `DB_*` connection se
 
 JSON responses use a `data` envelope; errors use `{"error":{"code":"...","message":"..."}}`. List endpoints return `items`, `pagination` (`page`, `pageSize`, `total`), and—on materials—database-derived `filters`. Both English query names (`educationLevel`, `accessTier`, `sort`, `pageSize`) and the existing catalog names (`jenjang`, `akses`, `urutan`, `batas`) are accepted. Search is `q`; filters also include `grade`, `subject`, and, for packages, `kind` and `difficulty`. Page size is limited to 100. Material sorting supports `relevan`, `terbaru`, `populer` (distinct learners with recorded progress), and `latihan` (published practice questions).
 
-Refresh tokens are random, stored only as SHA-256 hashes in `auth_sessions`, and returned solely in an HttpOnly cookie. Access tokens are short-lived HS256 bearer tokens. In development, an access-token secret is generated at startup if none is configured; tokens issued before a restart then become invalid. Configure a stable secret through the environment in production. Refresh cookies are scoped to `/api/v1/auth`; outside development they use Secure and SameSite=None for HTTPS cross-site frontend/API deployments, while local HTTP development uses SameSite=Strict without Secure. Configure exact `CORS_ALLOWED_ORIGINS` values for browser deployments.
+Authentication is JWT Bearer-only: login and registration return a short-lived HS256 access token, and protected routes require `Authorization: Bearer <token>`. The API neither creates refresh sessions nor uses cookies, and `/auth/refresh` is not available. Logout is client-side token removal; a stateless JWT cannot be revoked before expiry without adding a revocation mechanism. In development, an access-token secret is generated at startup if none is configured; tokens issued before a restart then become invalid. Configure a stable secret through the environment in production. Configure exact `CORS_ALLOWED_ORIGINS` values for browser deployments.
 
 No schema, tables, or migrations are created by this application. The database must already contain the expected schema.
 
