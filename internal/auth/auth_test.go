@@ -76,6 +76,83 @@ func TestRefreshTokenStoresOnlyHash(t *testing.T) {
 	}
 }
 
+func TestRefreshCookieAttributes(t *testing.T) {
+	tests := []struct {
+		name         string
+		secure       bool
+		wantSecure   bool
+		wantSameSite http.SameSite
+	}{
+		{
+			name:         "https cross-site deployment",
+			secure:       true,
+			wantSecure:   true,
+			wantSameSite: http.SameSiteNoneMode,
+		},
+		{
+			name:         "local http development",
+			secure:       false,
+			wantSecure:   false,
+			wantSameSite: http.SameSiteStrictMode,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := configForTest()
+			cfg.SecureCookies = tt.secure
+			handler := NewHandler(
+				NewService(NewRepository(nil), cfg),
+				slog.New(slog.NewTextHandler(io.Discard, nil)),
+			)
+
+			expiresAt := time.Now().Add(time.Hour).UTC()
+			setResponse := httptest.NewRecorder()
+			handler.setRefreshCookie(setResponse, "refresh-token", expiresAt)
+			setCookies := setResponse.Result().Cookies()
+			if len(setCookies) != 1 {
+				t.Fatalf("set cookie count = %d, want 1", len(setCookies))
+			}
+			setCookie := setCookies[0]
+			assertRefreshCookieAttributes(t, setCookie, tt.wantSecure, tt.wantSameSite)
+			if setCookie.Value != "refresh-token" || setCookie.Expires.Unix() != expiresAt.Unix() || setCookie.MaxAge <= 0 {
+				t.Fatalf("issued cookie has unexpected value or lifetime: %+v", setCookie)
+			}
+
+			clearResponse := httptest.NewRecorder()
+			handler.clearRefreshCookie(clearResponse)
+			clearCookies := clearResponse.Result().Cookies()
+			if len(clearCookies) != 1 {
+				t.Fatalf("clear cookie count = %d, want 1", len(clearCookies))
+			}
+			clearCookie := clearCookies[0]
+			assertRefreshCookieAttributes(t, clearCookie, tt.wantSecure, tt.wantSameSite)
+			if clearCookie.Value != "" || clearCookie.MaxAge != -1 {
+				t.Fatalf("clear cookie does not expire the session: %+v", clearCookie)
+			}
+		})
+	}
+}
+
+func assertRefreshCookieAttributes(t *testing.T, cookie *http.Cookie, secure bool, sameSite http.SameSite) {
+	t.Helper()
+	if cookie.Name != refreshCookieName {
+		t.Errorf("cookie name = %q, want %q", cookie.Name, refreshCookieName)
+	}
+	if cookie.Path != "/api/v1/auth" {
+		t.Errorf("cookie path = %q, want /api/v1/auth", cookie.Path)
+	}
+	if !cookie.HttpOnly {
+		t.Error("cookie is not HttpOnly")
+	}
+	if cookie.Secure != secure {
+		t.Errorf("cookie Secure = %t, want %t", cookie.Secure, secure)
+	}
+	if cookie.SameSite != sameSite {
+		t.Errorf("cookie SameSite = %v, want %v", cookie.SameSite, sameSite)
+	}
+}
+
 func TestValidateRegistrationUsesSchemaGradeRanges(t *testing.T) {
 	request := registerRequest{
 		Email: " Student@Example.com ", Password: "strong passphrase",

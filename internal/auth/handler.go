@@ -242,19 +242,23 @@ func (h *Handler) setRefreshCookie(w http.ResponseWriter, token string, expiresA
 	if maxAge < 0 {
 		maxAge = 0
 	}
-	http.SetCookie(w, &http.Cookie{
-		Name: refreshCookieName, Value: token, Path: "/api/v1/auth",
-		Expires: expiresAt.UTC(), MaxAge: maxAge, HttpOnly: true, Secure: h.service.secureCookies,
-		SameSite: http.SameSiteStrictMode,
-	})
+	http.SetCookie(w, h.refreshCookie(token, expiresAt, maxAge))
 }
 
 func (h *Handler) clearRefreshCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{
-		Name: refreshCookieName, Value: "", Path: "/api/v1/auth",
-		Expires: time.Unix(1, 0).UTC(), MaxAge: -1, HttpOnly: true, Secure: h.service.secureCookies,
-		SameSite: http.SameSiteStrictMode,
-	})
+	http.SetCookie(w, h.refreshCookie("", time.Unix(1, 0).UTC(), -1))
+}
+
+func (h *Handler) refreshCookie(value string, expiresAt time.Time, maxAge int) *http.Cookie {
+	sameSite := http.SameSiteStrictMode
+	if h.service.secureCookies {
+		sameSite = http.SameSiteNoneMode
+	}
+	return &http.Cookie{
+		Name: refreshCookieName, Value: value, Path: "/api/v1/auth",
+		Expires: expiresAt.UTC(), MaxAge: maxAge, HttpOnly: true,
+		Secure: h.service.secureCookies, SameSite: sameSite,
+	}
 }
 
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, value any) {
