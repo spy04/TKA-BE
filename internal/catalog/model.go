@@ -249,4 +249,5 @@ type listQuery struct {
 	Sort                   string
 	Kind                   string
 	Difficulty             string
+	Landing                bool
 }

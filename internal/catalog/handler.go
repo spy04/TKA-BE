@@ -135,6 +135,13 @@ func parseListQuery(values url.Values, packages bool) (listQuery, error) {
 		return listQuery{}, errors.New("accessTier must be FREE or PREMIUM")
 	}
 	query.Sort = strings.ToLower(strings.TrimSpace(firstValue(values, "sort", "urutan")))
+	if !packages {
+		landing := strings.TrimSpace(firstValue(values, "isLanding", "is_landing"))
+		if landing != "" && !strings.EqualFold(landing, "true") && !strings.EqualFold(landing, "false") {
+			return listQuery{}, errors.New("isLanding must be true or false")
+		}
+		query.Landing = strings.EqualFold(landing, "true")
+	}
 	if packages {
 		query.Kind = strings.ToUpper(strings.TrimSpace(firstValue(values, "kind", "jenis")))
 		if query.Kind == "SEMUA" {

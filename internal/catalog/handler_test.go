@@ -17,6 +17,7 @@ func TestParseMaterialListQuerySupportsFrontendAliases(t *testing.T) {
 		"urutan":        {"latihan"},
 		"halaman":       {"3"},
 		"batas":         {"12"},
+		"isLanding":     {"true"},
 	}
 	query, err := parseListQuery(values, false)
 	if err != nil {
@@ -24,7 +25,7 @@ func TestParseMaterialListQuerySupportsFrontendAliases(t *testing.T) {
 	}
 	if query.Search != "Newton" || query.Level != "SMA" || query.Grade != 11 ||
 		query.Subject != "Fisika" || query.Access != "FREE" || query.Sort != "latihan" ||
-		query.Page != 3 || query.PageSize != 12 || query.Offset != 24 {
+		query.Page != 3 || query.PageSize != 12 || query.Offset != 24 || !query.Landing {
 		t.Fatalf("parsed query = %+v", query)
 	}
 }
@@ -72,6 +73,16 @@ func TestMaterialWhereUsesBoundParameters(t *testing.T) {
 	want := []any{"%" + search + "%", "%" + search + "%", "%" + search + "%", "%" + search + "%", "SMA", 11, "Fisika", "Fisika", "FREE"}
 	if !reflect.DeepEqual(args, want) {
 		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+func TestMaterialWhereFiltersLandingMaterials(t *testing.T) {
+	where, args := materialWhere(listQuery{Landing: true})
+	if !strings.Contains(where, "m.is_landing = TRUE") {
+		t.Fatalf("where = %q, want is_landing filter", where)
+	}
+	if len(args) != 0 {
+		t.Fatalf("args = %#v, want no arguments", args)
 	}
 }
 

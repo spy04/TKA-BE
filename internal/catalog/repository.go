@@ -347,6 +347,9 @@ func materialWhere(query listQuery) (string, []any) {
 	if query.Access != "" {
 		conditions = append(conditions, "m.access_tier = "+appendPostgresArg(&args, query.Access))
 	}
+	if query.Landing {
+		conditions = append(conditions, "m.is_landing = TRUE")
+	}
 	return " WHERE " + strings.Join(conditions, " AND "), args
 }
 
